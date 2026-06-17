@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Promptus 范式：语义 Prompt 流代替像素流</title>
+<style>
+  :root {
+    --bg: #0B0E14; --card: #1A202C; --card2: #141A24;
+    --w: #F0F0F0; --g: #8899AA; --dim: #3a4050;
+    --blue: #4E9EFF; --cyan: #2DDEED; --orange: #FF8C42;
+    --green: #42CC70; --gold: #FFD13B; --red: #FF4D5A;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  /* Full viewport, center the stage */
+  body {
+    background: var(--bg);
+    height: 100vh; width: 100vw; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Microsoft YaHei','PingFang SC',sans-serif;
+    user-select: none;
+  }
+
+  /*
+    Stage: fixed 16:9 aspect ratio, scaled to fit viewport.
+    All inner dimensions are % of stage — they scale proportionally forever.
+  */
+  .stage {
+    /* 16:9 */
+    aspect-ratio: 16 / 9;
+    /* Fit within viewport: min of width-limited vs height-limited */
+    width: 100vw;
+    max-width: calc(100vh * 16 / 9);
+    max-height: 100vh;
+    /* If height-limited, override width */
+    /* We use a container query approach or just max-width/max-height */
+    position: relative;
+    display: flex; flex-direction: column;
+    padding: 1.2% 0.8%;
+    color: var(--w);
+  }
+  /* Override: if viewport is tall/narrow, constrain by height */
+  @media (min-aspect-ratio: 16/9) {
+    .stage {
+      width: auto;
+      height: 100vh;
+    }
+  }
+
+  /* ---------- TITLE ---------- */
+  .title-row {
+    text-align: center; flex-shrink: 0;
+  }
+  .title-row h1 {
+    font-size: 2.2cqi; font-weight: 900; letter-spacing: 0.08em;
+    background: linear-gradient(90deg, var(--cyan) 0%, var(--blue) 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .title-row .sub {
+    font-size: 0.85cqi; color: var(--g); margin-top: 0.2%;
+  }
+
+  /* ---------- PROGRESS BAR ---------- */
+  .progress-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 0; margin: 0.6% 0; flex-shrink: 0;
+  }
+  .prog-step {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 0.3cqi; cursor: pointer;
+  }
+  .prog-dot {
+    width: 3cqi; height: 3cqi; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2cqi; font-weight: 900;
+    background: #1a2030; color: #556;
+    border: 0.15cqi solid #2a3040;
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .prog-dot.active {
+    border-color: var(--cyan); color: var(--cyan);
+    box-shadow: 0 0 1.6cqi rgba(45,222,237,0.4);
+    transform: scale(1.12);
+  }
+  .prog-dot.done { background: var(--cyan); color: var(--bg); border-color: var(--cyan); }
+  .prog-label {
+    font-size: 0.72cqi; color: #556;
+    transition: color 0.5s; text-align: center;
+    width: 5.5cqi;
+  }
+  .prog-label.active { color: var(--cyan); font-weight: bold; }
+  .prog-label.done { color: var(--cyan); }
+  .prog-line {
+    width: 2.8cqi; height: 0.15cqi;
+    background: #1a2030; transition: background 0.5s;
+  }
+  .prog-line.done { background: var(--cyan); }
+
+  /* ---------- MAIN PANELS ---------- */
+  .main {
+    display: flex; gap: 0.9%;
+    flex: 1; min-height: 0;
+  }
+  .panel {
+    background: var(--card);
+    border-radius: 0.9cqi;
+    padding: 1.1% 1.0%;
+    border: 0.08cqi solid #1e2838;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-hd {
+    font-size: 0.95cqi; font-weight: bold;
+    text-align: center; margin-bottom: 0.8%;
+    letter-spacing: 0.06em; flex-shrink: 0;
+  }
+
+  /* ---- SENDER (31%) ---- */
+  .sender { width: 31%; align-items: center; flex-shrink: 0; }
+  .sender .panel-hd { color: var(--orange); }
+
+  .img-box {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 3 / 2;
+    border-radius: 0.6cqi;
+    overflow: hidden; margin-bottom: 0.3%;
+    background: #111;
+    border: 0.08cqi solid #2a3040;
+    transition: border-color 0.3s;
+    flex-shrink: 0;
+  }
+  .img-box canvas, .img-box img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  .img-box .drop-hint {
+    position: absolute; inset: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+    color: #445; font-size: 1.1cqi; pointer-events: none;
+    flex-direction: column; gap: 0.4%;
+    background: rgba(11,14,20,0.6);
+  }
+  .img-btns {
+    display: flex; gap: 0.5%; margin-bottom: 0.2%; flex-shrink: 0; width: 100%;
+    justify-content: center; flex-wrap: wrap;
+  }
+  .img-btns .btn { font-size: 0.7cqi; padding: 0.3% 0.8%; }
+  .scene-label {
+    font-size: 0.7cqi; color: var(--g);
+    text-align: center; margin-bottom: 0.4%; flex-shrink: 0;
+  }
+  .scene-label span { color: var(--red); }
+
+  /* Layer cards */
+  .layers {
+    display: flex; gap: 0.6%; flex: 1; width: 100%; min-height: 0;
+  }
+  .lcard {
+    flex: 1;
+    background: var(--card2);
+    border-radius: 0.5cqi;
+    padding: 0.6% 0.4%;
+    text-align: center;
+    border-top: 0.2cqi solid #2a3040;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 0.2%;
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity: 0.18; filter: grayscale(0.6) blur(0.04cqi);
+    pointer-events: none; overflow: hidden;
+  }
+  .lcard.on { opacity: 1; filter: none; transform: translateY(-0.15cqi); pointer-events: auto; }
+  .lcard.l1.on { border-top-color: var(--cyan); box-shadow: 0 0.3cqi 1.2cqi rgba(45,222,237,0.1); }
+  .lcard.l2.on { border-top-color: var(--orange); box-shadow: 0 0.3cqi 1.2cqi rgba(255,140,66,0.1); }
+  .lcard.l3.on { border-top-color: var(--green); box-shadow: 0 0.3cqi 1.2cqi rgba(66,204,112,0.1); }
+
+  .lcard .lnum {
+    font-size: 0.65cqi; font-weight: bold; flex-shrink: 0;
+  }
+  .lcard .lthumb {
+    width: 100%; flex: 1; min-height: 0;
+    border-radius: 0.35cqi; overflow: hidden;
+    background: #111; border: 0.06cqi solid #1e2838;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .lcard .lthumb canvas {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  .lcard .lthumb .placeholder {
+    font-size: 0.72cqi; color: #334;
+    text-align: center; padding: 2%;
+  }
+  .lcard .lrate {
+    font-size: 0.65cqi; color: var(--gold);
+    font-weight: bold; flex-shrink: 0;
+  }
+
+  /* ---- CHANNEL (9%) ---- */
+  .channel {
+    width: 9%; flex-shrink: 0;
+    align-items: center; justify-content: center;
+    background: transparent; border: none; padding: 0;
+  }
+  .ch-inner { text-align: center; }
+  .ch-label {
+    font-size: 0.75cqi; color: var(--dim);
+    margin-bottom: 0.3%; transition: color 0.5s;
+  }
+  .ch-label.on { color: var(--g); }
+  .ch-icon {
+    font-size: 2.8cqi; margin-bottom: 0.3%;
+    opacity: 0.25; transition: opacity 0.5s;
+  }
+  .ch-icon.on { opacity: 1; animation: chPulse 1.8s ease-in-out infinite; }
+  @keyframes chPulse {
+    0%,100%{opacity:0.6;transform:scale(1)}
+    50%{opacity:1;transform:scale(1.08)}
+  }
+  .ch-particles {
+    display: flex; gap: 0.3cqi; justify-content: center;
+    margin: 0.3% 0; opacity: 0.2; transition: opacity 0.5s;
+  }
+  .ch-particles.on { opacity: 1; }
+  .ch-p {
+    width: 0.55cqi; height: 0.55cqi; border-radius: 50%;
+    animation: chFlow 1s ease-in-out infinite;
+  }
+  .ch-p:nth-child(1){background:var(--cyan);animation-delay:0s}
+  .ch-p:nth-child(2){background:var(--orange);animation-delay:0.18s}
+  .ch-p:nth-child(3){background:var(--green);animation-delay:0.36s}
+  @keyframes chFlow {
+    0%,100%{opacity:0.3;transform:translateX(-0.25cqi)}
+    50%{opacity:1;transform:translateX(0.25cqi)}
+  }
+  .ch-bw {
+    background: rgba(66,204,112,0.05);
+    border: 0.08cqi solid rgba(66,204,112,0.12);
+    border-radius: 0.6cqi;
+    padding: 0.6cqi 0.4cqi;
+    text-align: center;
+    opacity: 0.2; transition: all 0.5s;
+  }
+  .ch-bw.on {
+    opacity: 1;
+    background: rgba(66,204,112,0.1);
+    border-color: rgba(66,204,112,0.3);
+  }
+  .ch-bw .big {
+    display: block;
+    font-size: 1.6cqi; font-weight: 900;
+    line-height: 1.2;
+    color: var(--dim); transition: color 0.5s;
+  }
+  .ch-bw.on .big { color: var(--green); }
+  .ch-bw .mid {
+    font-size: 0.65cqi; color: var(--dim);
+    transition: color 0.5s; margin-top: 0.15cqi;
+  }
+  .ch-bw.on .mid { color: var(--g); }
+  .ch-bw .vs {
+    font-size: 0.6cqi; margin-top: 0.3cqi;
+    color: var(--dim); transition: color 0.5s;
+    line-height: 1.3;
+  }
+  .ch-bw.on .vs { color: var(--red); }
+  .ch-ratio {
+    font-size: 2.8cqi; margin-top: 0.3%;
+    font-weight: 900;
+    color: var(--dim); transition: all 0.5s;
+  }
+  .ch-ratio.on { color: var(--green); transform: scale(1.1); }
+  .ch-ratio-sub {
+    font-size: 0.6cqi; color: var(--dim);
+    transition: color 0.5s;
+  }
+  .ch-ratio-sub.on { color: var(--g); }
+
+  /* ---- RECEIVER (42%) ---- */
+  .receiver { flex: 1; align-items: center; min-width: 0; }
+  .receiver .panel-hd { color: var(--green); }
+
+  .rsteps {
+    display: flex; flex-direction: column;
+    gap: 0.3%; width: 100%; flex-shrink: 0;
+  }
+  .rs {
+    display: flex; align-items: center;
+    gap: 0.5%;
+    background: var(--card2);
+    border-radius: 0.4cqi;
+    padding: 0.55% 0.7%;
+    border-left: 0.2cqi solid #1e2838;
+    transition: all 0.5s;
+    opacity: 0.2; filter: grayscale(0.4) blur(0.03cqi);
+    pointer-events: none;
+  }
+  .rs.on { opacity: 1; filter: none; border-left-color: var(--cyan); pointer-events: auto; }
+  .rs-num {
+    width: 1.8cqi; height: 1.8cqi; border-radius: 50%;
+    background: #0d1117; display: flex;
+    align-items: center; justify-content: center;
+    font-size: 0.85cqi; font-weight: 900;
+    color: var(--cyan); flex-shrink: 0;
+  }
+  .rs-body { flex: 1; min-width: 0; }
+  .rs-title { font-size: 0.82cqi; font-weight: bold; }
+  .rs-desc  { font-size: 0.65cqi; color: var(--g); margin-top: 0.06cqi; }
+  .rs-arr {
+    text-align: center; color: var(--gold);
+    font-size: 1.2cqi; margin: 0;
+    opacity: 0.15; transition: opacity 0.5s;
+    line-height: 0.3;
+  }
+  .rs-arr.on { opacity: 1; }
+
+  .out-box {
+    position: relative;
+    width: 100%; flex: 1; min-height: 0;
+    aspect-ratio: 3 / 2;
+    border-radius: 0.6cqi;
+    overflow: hidden;
+    margin-top: 0.6%;
+    background: #111;
+    border: 0.12cqi solid #1e2838;
+    transition: all 0.8s;
+    flex-shrink: 0;
+  }
+  .out-box canvas, .out-box img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  .out-box.glow {
+    box-shadow: 0 0 2.5cqi rgba(66,204,112,0.5);
+    border-color: var(--green);
+  }
+  .out-box .badge {
+    position: absolute; top: 2.5%; right: 2%;
+    z-index: 2;
+    font-size: 0.62cqi; color: var(--green);
+    font-weight: bold;
+    background: rgba(11,14,20,0.85);
+    padding: 0.2% 0.6%; border-radius: 0.3cqi;
+    transition: opacity 0.6s;
+  }
+
+  /* ---- BANDWIDTH BAR ---- */
+  .bw-section {
+    width: 100%; display: flex; gap: 1%;
+    margin-top: 0.5%; flex-shrink: 0;
+  }
+  .bw-group { flex: 1; }
+  .bw-label {
+    font-size: 0.72cqi; font-weight: bold;
+    margin-bottom: 0.15%; display: flex;
+    justify-content: space-between;
+  }
+  .bw-track {
+    height: 1.8cqi; background: #111820;
+    border-radius: 0.4cqi; overflow: hidden;
+  }
+  .bw-fill {
+    height: 100%; border-radius: 0.4cqi;
+    display: flex; align-items: center;
+    padding-left: 0.7%;
+    font-size: 0.7cqi; font-weight: 900;
+    transition: width 1.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  .bw-fill.h265 { background: var(--red); color: #fff; width: 100%; }
+  .bw-fill.pro {
+    background: var(--green); color: #000;
+    width: 0%; overflow: hidden; white-space: nowrap;
+  }
+
+  /* ---- CONTROLS ---- */
+  .ctrls {
+    margin-top: 0.5%; display: flex;
+    gap: 0.5%; align-items: center; flex-shrink: 0;
+  }
+  .btn {
+    padding: 0.35% 0.9%;
+    border-radius: 0.4cqi;
+    border: 0.07cqi solid var(--blue);
+    background: transparent; color: var(--blue);
+    font-size: 0.8cqi; cursor: pointer;
+    font-family: inherit; transition: all 0.25s;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+  .btn:hover { background: rgba(78,158,255,0.12); }
+  .btn.go { background: var(--blue); color: #000; font-weight: bold; border: none; }
+  .btn.go:hover { background: #5eaeff; }
+  .step-info {
+    font-size: 0.78cqi; color: var(--g);
+    flex: 1; text-align: center;
+    min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .key-hint {
+    margin-top: 0.2%; flex-shrink: 0;
+    font-size: 0.58cqi; color: #334; text-align: center;
+  }
+  .ref-line {
+    margin-top: 0.15%; flex-shrink: 0;
+    font-size: 0.58cqi; color: #445; text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="title-row">
+    <h1>Promptus 范式：语义 Prompt 流代替像素流</h1>
+    <div class="sub">子方向 1.2 — 全场核心：三层语义分解 + 条件扩散重建 | 按 → / 空格键逐步演示</div>
+  </div>
+
+  <div class="progress-row">
+    <div class="prog-step"><div class="prog-dot active" id="dot0">1</div><div class="prog-label active" id="lbl0">原始图像</div></div>
+    <div class="prog-line" id="line0"></div>
+    <div class="prog-step"><div class="prog-dot" id="dot1">2</div><div class="prog-label" id="lbl1">三层分解</div></div>
+    <div class="prog-line" id="line1"></div>
+    <div class="prog-step"><div class="prog-dot" id="dot2">3</div><div class="prog-label" id="lbl2">信道传输</div></div>
+    <div class="prog-line" id="line2"></div>
+    <div class="prog-step"><div class="prog-dot" id="dot3">4</div><div class="prog-label" id="lbl3">条件注入</div></div>
+    <div class="prog-line" id="line3"></div>
+    <div class="prog-step"><div class="prog-dot" id="dot4">5</div><div class="prog-label" id="lbl4">扩散重建</div></div>
+  </div>
+
+  <div class="main">
+    <!-- SENDER -->
+    <div class="panel sender">
+      <div class="panel-hd">📤 发送端：三层语义分解</div>
+      <div class="img-box" id="srcBox">
+        <canvas id="srcCv"></canvas>
+        <div class="drop-hint" id="dropHint">🖼️ 拖放图片到这里<br><span style="font-size:0.75em;color:#334;">或点击下方按钮</span></div>
+      </div>
+      <div class="img-btns">
+        <button class="btn" onclick="loadDemoImg()">📷 加载示例</button>
+        <button class="btn" onclick="document.getElementById('fileInput').click()">📁 本地图片</button>
+        <input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFile(this)">
+      </div>
+      <div class="scene-label">1080p 原始图像 ≈ <span>6 MB</span> / 帧</div>
+      <div class="layers">
+        <div class="lcard l1" id="lc1">
+          <div class="lnum" style="color:var(--cyan)">第①层 文本描述</div>
+          <div class="lthumb">
+            <div class="placeholder" id="txtPrompt" style="color:var(--cyan);">（先加载图片）</div>
+          </div>
+          <div class="lrate">~ 几十 bps</div>
+        </div>
+        <div class="lcard l2" id="lc2">
+          <div class="lnum" style="color:var(--orange)">第②层 结构轮廓</div>
+          <div class="lthumb"><canvas id="edgeCv"></canvas></div>
+          <div class="lrate">~ 几 kbps</div>
+        </div>
+        <div class="lcard l3" id="lc3">
+          <div class="lnum" style="color:var(--green)">第③层 退化缩略图</div>
+          <div class="lthumb"><canvas id="thumbCv"></canvas></div>
+          <div class="lrate">~ 几十 kbps</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHANNEL -->
+    <div class="panel channel">
+      <div class="ch-inner">
+        <div class="ch-label" id="chLabel">无线信道</div>
+        <div class="ch-icon" id="chIcon">📡</div>
+        <div class="ch-particles" id="chParts">
+          <div class="ch-p"></div><div class="ch-p"></div><div class="ch-p"></div>
+        </div>
+        <div class="ch-bw" id="chBw">
+          <span class="big">50~200<br>kbps</span>
+          <span class="mid">三层合计码率</span>
+          <div class="vs">vs H.265<br>2~5 Mbps</div>
+        </div>
+        <div class="ch-ratio" id="chRatio">1/20</div>
+        <div class="ch-ratio-sub" id="chRatioSub">仅为传统方案</div>
+      </div>
+    </div>
+
+    <!-- RECEIVER -->
+    <div class="panel receiver">
+      <div class="panel-hd">📥 接收端：条件扩散重建</div>
+      <div class="rsteps">
+        <div class="rs" id="rs1">
+          <div class="rs-num">1</div>
+          <div class="rs-body">
+            <div class="rs-title">文本 Prompt → CLIP Encoder → Cross-Attention 注入</div>
+            <div class="rs-desc">语义信息通过交叉注意力层注入扩散 U-Net 各层</div>
+          </div>
+        </div>
+        <div class="rs-arr" id="ra1">↓</div>
+        <div class="rs" id="rs2">
+          <div class="rs-num">2</div>
+          <div class="rs-body">
+            <div class="rs-title">结构轮廓 → ControlNet → 空间条件注入</div>
+            <div class="rs-desc">SPADE 模块在 U-Net 各级控制空间布局与物体形状</div>
+          </div>
+        </div>
+        <div class="rs-arr" id="ra2">↓</div>
+        <div class="rs" id="rs3">
+          <div class="rs-num">3</div>
+          <div class="rs-body">
+            <div class="rs-title">退化缩略图 → img2img → 色彩与布局先验</div>
+            <div class="rs-desc">从噪声缩略图起步，大幅减少去噪步数</div>
+          </div>
+        </div>
+        <div class="rs-arr" id="ra3">↓</div>
+        <div class="rs" id="rs4">
+          <div class="rs-num">4</div>
+          <div class="rs-body">
+            <div class="rs-title">条件扩散模型 → 逐步去噪 → 高质量重建</div>
+            <div class="rs-desc">三条件联合引导反向扩散，高保真恢复语义图像</div>
+          </div>
+        </div>
+      </div>
+      <div class="out-box" id="outBox">
+        <canvas id="outCv"></canvas>
+        <div class="badge" id="outBadge">✓ 语义重建完成</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bw-section">
+    <div class="bw-group">
+      <div class="bw-label">
+        <span style="color:var(--red)">H.265 1080p 视频</span>
+        <span style="color:var(--red)">2 ~ 5 Mbps</span>
+      </div>
+      <div class="bw-track"><div class="bw-fill h265">100% 基准</div></div>
+    </div>
+    <div class="bw-group">
+      <div class="bw-label">
+        <span style="color:var(--green)">Promptus 三层语义</span>
+        <span style="color:var(--green)">50 ~ 200 kbps</span>
+      </div>
+      <div class="bw-track"><div class="bw-fill pro" id="bwPro">仅 1/10 ~ 1/20</div></div>
+    </div>
+  </div>
+
+  <div class="ctrls">
+    <button class="btn" onclick="goStep(-1)">◀ 上一步</button>
+    <button class="btn go" onclick="autoPlay()" id="btnPlay">▶ 自动演示</button>
+    <button class="btn" onclick="goStep(1)">下一步 ▶</button>
+    <span class="step-info" id="stepTxt">点击「自动演示」或按 → 键逐步演示（请先加载图片）</span>
+  </div>
+  <div class="key-hint">⌨ ← 上一步 | → / 空格 下一步 | Enter 自动播放 | 点击进度圆点跳转 | 拖放图片到左侧面板</div>
+  <div class="ref-line">核心论文: S. F. Yilmaz et al., Promptus: Can Prompts Streaming Replace Video Streaming with Stable Diffusion, arXiv:2405.20032, 2024</div>
+</div><!-- .stage -->
+
+<script>
+// ==================== STATE ====================
+let step = 0; const N = 5; let timer = null;
+let sourceImage = null;
+
+// ==================== CANVAS RESIZE ====================
+function sizeCanvas(cvId) {
+  const cv = document.getElementById(cvId);
+  if (!cv) return;
+  const parent = cv.parentElement;
+  if (!parent) return;
+  const rect = parent.getBoundingClientRect();
+  const w = Math.round(rect.width);
+  const h = Math.round(rect.height);
+  if (w > 0 && h > 0 && (cv.width !== w || cv.height !== h)) {
+    cv.width = w;
+    cv.height = h;
+  }
+}
+
+function sizeAllCanvases() {
+  sizeCanvas('srcCv');
+  sizeCanvas('edgeCv');
+  sizeCanvas('thumbCv');
+  sizeCanvas('outCv');
+}
+
+// ==================== IMAGE LOADING ====================
+function loadDemoImg() {
+  const urls = [
+    'https://picsum.photos/seed/office-meeting/800/534',
+    'https://picsum.photos/id/180/800/534',
+    'https://picsum.photos/id/152/800/534',
+  ];
+  loadFromURL(urls[0], () => loadFromURL(urls[1], () => loadFromURL(urls[2], () => {
+    alert('无法加载在线图片，请使用「本地图片」按钮或拖放图片。');
+  })));
+}
+
+function loadFromURL(url, fallback) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => { sourceImage = img; onImageReady(); };
+  img.onerror = fallback;
+  img.src = url;
+}
+
+function handleFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  loadFile(file);
+}
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => { sourceImage = img; onImageReady(); };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// Drag & drop on source box
+const srcBox = document.getElementById('srcBox');
+srcBox.addEventListener('dragover', e => { e.preventDefault(); srcBox.style.borderColor = 'var(--cyan)'; });
+srcBox.addEventListener('dragleave', e => { e.preventDefault(); srcBox.style.borderColor = ''; });
+srcBox.addEventListener('drop', e => {
+  e.preventDefault(); srcBox.style.borderColor = '';
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadFile(file);
+});
+
+// Also allow drop anywhere on stage
+document.querySelector('.stage').addEventListener('dragover', e => { e.preventDefault(); });
+document.querySelector('.stage').addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadFile(file);
+});
+
+function onImageReady() {
+  document.getElementById('dropHint').style.display = 'none';
+  sizeAllCanvases();
+  generateTextPrompt();
+  updateUI();
+}
+
+// ==================== IMAGE PROCESSING ====================
+function drawSource() {
+  const cv = document.getElementById('srcCv');
+  if (!cv || cv.width <= 0) return;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if (sourceImage) ctx.drawImage(sourceImage, 0, 0, cv.width, cv.height);
+  else { ctx.fillStyle='#111'; ctx.fillRect(0,0,cv.width,cv.height); }
+}
+
+function drawEdges() {
+  const cv = document.getElementById('edgeCv');
+  if (!cv || cv.width <= 0) { clearCanvas(cv); return; }
+  if (!sourceImage) { clearCanvas(cv); return; }
+  const w = cv.width, h = cv.height;
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  const tctx = tmp.getContext('2d');
+  tctx.drawImage(sourceImage, 0, 0, w, h);
+  const imgData = tctx.getImageData(0,0,w,h);
+  const d = imgData.data;
+
+  const gray = new Float32Array(w*h);
+  for (let i = 0; i < w*h; i++) gray[i] = d[i*4]*0.299 + d[i*4+1]*0.587 + d[i*4+2]*0.114;
+
+  const edge = new Float32Array(w*h);
+  let maxEdge = 0;
+  for (let y = 1; y < h-1; y++) {
+    for (let x = 1; x < w-1; x++) {
+      const idx = y*w + x;
+      const gx = -gray[idx-w-1] + gray[idx-w+1] - 2*gray[idx-1] + 2*gray[idx+1] - gray[idx+w-1] + gray[idx+w+1];
+      const gy = -gray[idx-w-1] - 2*gray[idx-w] - gray[idx-w+1] + gray[idx+w-1] + 2*gray[idx+w] + gray[idx+w+1];
+      edge[idx] = Math.sqrt(gx*gx + gy*gy);
+      if (edge[idx] > maxEdge) maxEdge = edge[idx];
+    }
+  }
+
+  const ctx = cv.getContext('2d');
+  const scale = maxEdge > 0 ? 255 / maxEdge : 1;
+  const outData = ctx.createImageData(w, h);
+  for (let i = 0; i < w*h; i++) {
+    const v = 255 - Math.min(255, edge[i] * scale * 1.5);
+    outData.data[i*4] = v; outData.data[i*4+1] = v; outData.data[i*4+2] = v; outData.data[i*4+3] = 255;
+  }
+  ctx.putImageData(outData, 0, 0);
+}
+
+function drawThumbnail() {
+  const cv = document.getElementById('thumbCv');
+  if (!cv || cv.width <= 0) { clearCanvas(cv); return; }
+  if (!sourceImage) { clearCanvas(cv); return; }
+  const w = cv.width, h = cv.height;
+  const smallW = Math.max(4, Math.floor(w / 14));
+  const smallH = Math.max(3, Math.floor(h / 14));
+  const tmp = document.createElement('canvas');
+  tmp.width = smallW; tmp.height = smallH;
+  const tctx = tmp.getContext('2d');
+  tctx.drawImage(sourceImage, 0, 0, smallW, smallH);
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0,0,w,h);
+  ctx.drawImage(tmp, 0, 0, w, h);
+  ctx.imageSmoothingEnabled = true;
+}
+
+function clearCanvas(cv) {
+  if (!cv || cv.width <= 0) return;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#111'; ctx.fillRect(0,0,cv.width,cv.height);
+}
+
+function generateTextPrompt() {
+  if (!sourceImage) return;
+  const prompts = [
+    '自然场景照片，包含人物与室内环境，光线柔和',
+    '高质量彩色摄影作品，主体突出，构图均衡',
+    '真实世界场景抓拍，画面层次分明，氛围专业',
+    '人物在环境中自然活动，色彩丰富，细节饱满',
+  ];
+  const idx = (sourceImage.width * sourceImage.height + 7) % prompts.length;
+  document.getElementById('txtPrompt').textContent = prompts[idx];
+}
+
+// ==================== RECEIVER DRAWING ====================
+function drawReceiver() {
+  const cv = document.getElementById('outCv');
+  if (!cv || cv.width <= 0) return;
+  const ctx = cv.getContext('2d');
+
+  if (!sourceImage) {
+    ctx.fillStyle = '#111'; ctx.fillRect(0,0,cv.width,cv.height);
+    return;
+  }
+
+  // step 0-2: pure noise — receiver hasn't started decoding yet
+  // step 3:   medium noise + blockiness — partial recovery after condition injection
+  // step 4:   clean image — fully reconstructed
+  let noiseLevel;
+  if (step < 3)      noiseLevel = 255;
+  else if (step === 3) noiseLevel = 70;
+  else                noiseLevel = 0;
+
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  if (noiseLevel >= 255) {
+    const imgData = ctx.createImageData(cv.width, cv.height);
+    for (let i = 0; i < imgData.data.length; i += 4) {
+      const v = Math.floor(Math.random() * 255);
+      imgData.data[i] = v; imgData.data[i+1] = v; imgData.data[i+2] = v;
+      imgData.data[i+3] = 255;
+    }
+    ctx.putImageData(imgData, 0, 0);
+    return;
+  }
+
+  ctx.drawImage(sourceImage, 0, 0, cv.width, cv.height);
+
+  if (noiseLevel > 0) {
+    const imgData = ctx.getImageData(0,0,cv.width,cv.height);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const noise = (Math.random() - 0.5) * noiseLevel * 2;
+      d[i]   = Math.min(255, Math.max(0, d[i] + noise));
+      d[i+1] = Math.min(255, Math.max(0, d[i+1] + noise));
+      d[i+2] = Math.min(255, Math.max(0, d[i+2] + noise));
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    if (noiseLevel > 30) {
+      const bs = noiseLevel > 100 ? 8 : 4;
+      const data = ctx.getImageData(0,0,cv.width,cv.height);
+      ctx.clearRect(0,0,cv.width,cv.height);
+      for (let y = 0; y < cv.height; y += bs) {
+        for (let x = 0; x < cv.width; x += bs) {
+          let r=0,g=0,b=0,n=0;
+          const maxY = Math.min(y+bs, cv.height);
+          const maxX = Math.min(x+bs, cv.width);
+          for (let dy=y; dy<maxY; dy++)
+            for (let dx=x; dx<maxX; dx++) {
+              const idx = (dy*cv.width+dx)*4;
+              r+=data.data[idx]; g+=data.data[idx+1]; b+=data.data[idx+2]; n++;
+            }
+          ctx.fillStyle=`rgb(${~~(r/n)},${~~(g/n)},${~~(b/n)})`;
+          ctx.fillRect(x, y, maxX-x, maxY-y);
+        }
+      }
+    }
+  }
+}
+
+// ==================== UI UPDATE ====================
+function updateUI() {
+  sizeAllCanvases();
+
+  // Progress dots
+  for (let i = 0; i < N; i++) {
+    const d = document.getElementById('dot'+i), l = document.getElementById('lbl'+i);
+    d.className = 'prog-dot'; l.className = 'prog-label';
+    if (i < step) { d.classList.add('done'); l.classList.add('done'); }
+    if (i === step && step < N) { d.classList.add('active'); l.classList.add('active'); }
+  }
+  for (let i = 0; i < N-1; i++) {
+    const ln = document.getElementById('line'+i);
+    ln.className = 'prog-line';
+    if (i < step) ln.classList.add('done');
+  }
+
+  // Layer cards (step >= 1)
+  const layerOn = step >= 1;
+  ['lc1','lc2','lc3'].forEach(id => document.getElementById(id).classList.toggle('on', layerOn));
+
+  // Channel (step >= 2)
+  const chOn = step >= 2;
+  ['chLabel','chIcon','chParts','chBw','chRatio','chRatioSub'].forEach(id => {
+    document.getElementById(id).classList.toggle('on', chOn);
+  });
+
+  // Receiver steps (step >= 3)
+  const rsOn = step >= 3;
+  ['rs1','rs2','rs3','ra1','ra2','ra3'].forEach(id => {
+    document.getElementById(id).classList.toggle('on', rsOn);
+  });
+  document.getElementById('rs4').classList.toggle('on', step >= 4);
+
+  // Output box
+  document.getElementById('outBox').classList.toggle('glow', step >= 4);
+  document.getElementById('outBadge').style.opacity = step >= 4 ? '1' : '0';
+
+  // Bandwidth bar
+  document.getElementById('bwPro').style.width = step >= 2 ? '5%' : '0%';
+
+  // Info text
+  const msgs = [
+    '第①步：原始 1080p 图像，约 6 MB/帧 — 极窄带链路无法传输',
+    '第②步：三层语义分解 — 文本(~几十bps) + 结构轮廓(~几kbps) + 退化缩略图(~几十kbps)',
+    '第③步：无线信道传输 — 三层合计 50~200 kbps，仅为 H.265 的 1/20',
+    '第④步：接收端条件注入 — CLIP + ControlNet + img2img 三重引导',
+    '第⑤步：扩散模型去噪重建 — 从噪声中恢复高质量语义图像'
+  ];
+  document.getElementById('stepTxt').textContent = step < N ? msgs[step] : msgs[N-1];
+
+  // Draw
+  drawSource();
+  if (step >= 1 && sourceImage) {
+    drawEdges();
+    drawThumbnail();
+  } else {
+    clearCanvas(document.getElementById('edgeCv'));
+    clearCanvas(document.getElementById('thumbCv'));
+  }
+  drawReceiver();
+}
+
+// ==================== STEP CONTROLS ====================
+function goStep(dir) {
+  if (dir < 0 && step > 0) step--;
+  else if (dir > 0 && step < N) step++;
+  updateUI();
+  if (timer && step >= N) {
+    clearInterval(timer); timer = null;
+    document.getElementById('btnPlay').textContent = '⟳ 重新演示';
+  }
+}
+
+function goStepTarget(s) {
+  step = s; updateUI();
+  if (timer) { clearInterval(timer); timer = null; document.getElementById('btnPlay').textContent = '▶ 自动演示'; }
+}
+
+for (let i = 0; i < N; i++) {
+  document.getElementById('dot'+i).addEventListener('click', () => goStepTarget(i));
+}
+
+function autoPlay() {
+  if (timer) {
+    clearInterval(timer); timer = null;
+    document.getElementById('btnPlay').textContent = '▶ 自动演示';
+    return;
+  }
+  step = 0; updateUI();
+  document.getElementById('btnPlay').textContent = '⏸ 停止';
+  timer = setInterval(() => {
+    step++; updateUI();
+    if (step >= N) {
+      clearInterval(timer); timer = null;
+      document.getElementById('btnPlay').textContent = '⟳ 重新演示';
+    }
+  }, 1800);
+}
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goStep(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); goStep(-1); }
+  else if (e.key === 'Enter') { e.preventDefault(); autoPlay(); }
+});
+
+// Resize: just re-size canvases and redraw
+window.addEventListener('resize', () => {
+  sizeAllCanvases();
+  updateUI();
+});
+
+// Init
+sizeAllCanvases();
+updateUI();
+</script>
+</body>
+</html>
